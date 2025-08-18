@@ -8,7 +8,7 @@ if ($mysqli->connect_errno) {
 }
 
 $Three = [ 
-    "ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", 
+    "ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", "pl",
     "id", "ie", "it", "jp", "nz", "no", "ph", "es", "nl"
 ];
 $Seventeen = [

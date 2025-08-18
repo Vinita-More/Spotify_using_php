@@ -11,10 +11,10 @@ $COUNTRY_NAMES = [
     "in" => "India", "it" => "Italy", "jp" => "Japan", 
     "mx" => "Mexico", "nl" => "Netherlands", "no" => "Norway", 
     "nz" => "New Zealand", "ph" => "Philippines", "se" => "Sweden",
-    "us" => "United States", 
+    "us" => "United States", "pl" => "Poland",
 ];
 
-$Three = ["ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", "id", "ie", "it", "jp", "nz", "no", "ph", "es", "nl"];
+$Three = ["ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", "id", "ie", "it", "jp", "nz", "no", "ph", "es", "nl", "pl"];
 $Seventeen = ["au", "us", "gb", "br", "de", "mx", "se"];
 
 $CATEGORIES_20 = [
@@ -66,10 +66,10 @@ if ($mysqli->connect_errno) {
 }
 
 // ✅ Updated table to also store episodeId and episodeName
-$insert_sql = "INSERT INTO `14-08-with-top-episodes`
+$insert_sql = "INSERT INTO `spotify_20250817_143851`
     (showId, showName, showPublisher, showImageUrl, showDescription,
-     countryName, countryCode, category, chart_rank, episodeId, episodeName, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())";
+     countryName, countryCode, category,chart_rank, movement,episodeId, episodeName, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,NOW())";
 
 $stmt = $mysqli->prepare($insert_sql);
 if (!$stmt) {
@@ -110,7 +110,7 @@ foreach ($countries as $country) {
             $showDescription = $item['showDescription'] ?? '';
             $countryName     = $COUNTRY_NAMES[$country] ?? '';
             $categoryName    = ucwords(str_replace('-', ' ', $category));
-
+            $movement = $item['chartRankMove'] ?? "";
             // ✅ Episode details (only for top_episode
             // s)
             $episodeId   = null;
@@ -124,7 +124,7 @@ foreach ($countries as $country) {
             }
 
             $stmt->bind_param(
-                "ssssssssiss",
+                "ssssssssisss",
                 $showId,
                 $showName,
                 $showPublisher,
@@ -134,6 +134,7 @@ foreach ($countries as $country) {
                 $country,
                 $categoryName,
                 $rank,
+                $movement,
                 $episodeId,
                 $episodeName
             );

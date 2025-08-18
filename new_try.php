@@ -47,11 +47,11 @@ $COUNTRY_NAMES = [
     "in" => "India", "it" => "Italy", "jp" => "Japan", 
     "mx" => "Mexico", "nl" => "Netherlands", "no" => "Norway", 
     "nz" => "New Zealand", "ph" => "Philippines", "se" => "Sweden",
-    "us" => "United States", 
+    "us" => "United States", "pl" => "Poland",
 ];
 
 $Three = [ 
-    "ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", 
+    "ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", "pl",
     "id", "ie", "it", "jp", "nz", "no", "ph", "es", "nl"
 ];
 $Seventeen = [

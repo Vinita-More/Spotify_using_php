@@ -19,7 +19,7 @@ $COUNTRY_NAMES = [
 ];
 
 // Country groups
-$Three = ["ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", "id", "ie", "it", "jp", "nz", "no", "ph", "es", "nl"];
+$Three = ["ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", "id", "ie", "it", "jp", "nz", "no", "ph", "es", "nl","pl"];
 $Seventeen = ["au", "us", "gb", "br", "de", "mx", "se"];
 $one = [];
 
