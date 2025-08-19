@@ -1,95 +1,100 @@
 <?php
-$start_time = microtime(true);
 
-// DB connection
-$host = "localhost";
-$user = "root";
-$pass = "";
-$dbname = "podcasts";
-$conn = new mysqli($host, $user, $pass, $dbname);
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+    include './config.php';
 
-$yesterday = date('Y-m-d', strtotime('-1 day'));
-$today = date('Y-m-d');
+    $start_time = microtime(true);
 
-// Fetch yesterday's data
-$old_data = [];
-$sql_old = "SELECT * FROM podcasts WHERE DATE(created_at) = '$yesterday'";
-$result_old = $conn->query($sql_old);
+    $conn = new mysqli($db_host, $db_user, $db_pass, $db_name);
+    if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
 
-if ($result_old) {
-    while ($row = $result_old->fetch_assoc()) {
-        // Create unique key based on available columns
-        $key = ($row['category'] === 'top_episodes')
-            ? $row['countryCode'] . "|" . $row['category'] . "|" . $row['id'] . "|" . $row['episodeId']
-            : $row['countryCode'] . "|" . $row['category'] . "|" . $row['id'];
-        $old_data[$key] = (int)$row['chart_rank'];
-    }
-}
+    // Dates
+    $yesterday = 'spotify_20250818_070140';
+    $today     = 'spotify_20250819_054128';
 
-// Fetch today's data
-$sql_today = "SELECT * FROM podcasts WHERE DATE(created_at) = '$today'";
-$result_today = $conn->query($sql_today);
+    // ===============================
+    // 1. Fetch yesterday’s data
+    // ===============================
+    $old_data = [];
+    $sql_old = "SELECT id, showId,countryCode, category, episodeId, chart_rank 
+                FROM `$yesterday`";
+    $result_old = $conn->query($sql_old);
 
-$existing_keys_today = [];
-$max_rank_today = 0;
-
-if ($result_today) {
-    while ($row = $result_today->fetch_assoc()) {
-        // Create unique key
-        $key = ($row['category'] === 'top_episodes')
-            ? $row['countryCode'] . "|" . $row['category'] . "|" . $row['id'] . "|" . $row['episodeId']
-            : $row['countryCode'] . "|" . $row['category'] . "|" . $row['id'];
-        
-        $today_rank = (int)$row['chart_rank'];
-        if ($today_rank > $max_rank_today) $max_rank_today = $today_rank;
-        
-        $yesterday_rank = $old_data[$key] ?? null;
-        
-        // Determine movement
-        if ($yesterday_rank === null) {
-            $movement = "NEW";
-        } else {
-            $diff = $yesterday_rank - $today_rank;
-            if ($diff > 0) $movement = "+$diff";
-            elseif ($diff < 0) $movement = (string)$diff;
-            else $movement = "0";
+    if ($result_old) {
+        while ($row = $result_old->fetch_assoc()) {
+            $key = ($row['category'] === 'top_episodes')
+                ? $row['countryCode'] . "|" . $row['category'] . "|" . $row['showId'] . "|" . $row['episodeId']
+                : $row['countryCode'] . "|" . $row['category'] . "|" . $row['showId'];
+            $old_data[$key] = (int)$row['chart_rank'];
         }
-        
-        // Update the diff column in the database
-        $update_sql = "UPDATE podcasts SET diff = ? WHERE id = ? AND DATE(created_at) = ?";
-        $stmt = $conn->prepare($update_sql);
-        
-        if ($stmt) {
-            $stmt->bind_param("sis", $movement, $row['id'], $today);
-            $stmt->execute();
-            $stmt->close();
+    }
+
+    // ===============================
+    // 2. Fetch today’s data & compare
+    // ===============================
+    $sql_today = "SELECT id, showId, countryCode, category, episodeId, chart_rank 
+                FROM `$today`";
+    $result_today = $conn->query($sql_today);
+
+    $existing_keys_today = [];
+    $dropped_out_count = 0;
+
+    // Prepare update statement ONCE (faster than inside loop)
+    $update_sql = "UPDATE `$today` SET diff = ? , movement = ?  WHERE id = ? ";
+    $stmt = $conn->prepare($update_sql);
+
+    if ($stmt && $result_today) {
+        while ($row = $result_today->fetch_assoc()) {
+            $key = ($row['category'] === 'top_episodes')
+                ? $row['countryCode'] . "|" . $row['category'] . "|" . $row['showId'] . "|" . $row['episodeId']
+                : $row['countryCode'] . "|" . $row['category'] . "|" . $row['showId'];
+
+            $today_rank = (int)$row['chart_rank'];
+            $yesterday_rank = $old_data[$key] ?? null;
+            $diff = $yesterday_rank !== null ? $yesterday_rank - $today_rank : null;
+
+
+            if ($yesterday_rank === null) {
+                $movement = "new"; // not present yesterday
+            } elseif ($today_rank < $yesterday_rank) {
+                $movement = "up"; // rank improved
+            } elseif ($today_rank > $yesterday_rank) {
+                $movement = "down"; // rank dropped
+            } else {
+                $movement = "unchanged"; // rank same
+            }
+
+            // Update DB
+            if ($stmt) {
+                $stmt->bind_param("isi", $diff,$movement, $row['id']);
+                $stmt->execute();
+            }
+
+            $existing_keys_today[$key] = true;
         }
-        
-        $existing_keys_today[$key] = true;
     }
-}
 
-// Handle dropped out items (items that were in yesterday's data but not in today's)
-$dropped_out_count = 0;
-foreach ($old_data as $key => $yesterday_rank) {
-    if (!isset($existing_keys_today[$key])) {
-        $dropped_out_count++;
-        // Note: Since dropped items don't exist in today's data, 
-        // we can't update them in the current table structure
-        // You might want to log these or handle them differently
-        echo "Dropped out: $key (was rank $yesterday_rank)\n";
+    // ===============================
+    // 3. Dropped out items
+    // ===============================
+    foreach ($old_data as $key => $yesterday_rank) {
+        if (!isset($existing_keys_today[$key])) {
+            $dropped_out_count++;
+            echo "📉 Dropped out: $key (was rank $yesterday_rank)\n";
+        }
     }
-}
 
-$conn->close();
-$end_time = microtime(true);
-$elapsed = $end_time - $start_time;
-echo "✅ Rank comparison and update done! Time taken: " . round($elapsed, 2) . " seconds\n";
-echo "📊 Processed records from today's data\n";
-if ($dropped_out_count > 0) {
-    echo "📉 Found $dropped_out_count items that dropped out of rankings\n";
-}
+    // ===============================
+    // 4. Finish up
+    // ===============================
+    if ($stmt) $stmt->close();
+    $conn->close();
+
+    $end_time = microtime(true);
+    $elapsed = $end_time - $start_time;
+
+    echo "✅ Rank comparison & diff update complete!\n";
+    echo "⏱ Time taken: " . round($elapsed, 2) . "s\n";
+    echo "📊 Processed today's records. Dropped out: $dropped_out_count\n";
 
 //include "./config.php"; -->
 
