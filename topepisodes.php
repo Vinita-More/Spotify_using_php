@@ -1,6 +1,6 @@
 <?php
 // Has both episodes data from top episodes and all the rest present in to_db.php, this will aid rank comparison
-include_once './config.php';
+include_once '../config.php';
 
 $COUNTRY_NAMES = [
     "ad" => "Andorra", "ae" => "United Arab Emirates", "al" => "Albania", "ar" => "Argentina", "at" => "Austria", "au" => "Australia",
@@ -18,19 +18,24 @@ $COUNTRY_NAMES = [
     "ro" => "Romania", "rs" => "Serbia", "rw" => "Rwanda", "sa" => "Saudi Arabia", "se" => "Sweden", "sg" => "Singapore", "si" => "Slovenia",
     "sk" => "Slovakia", "sn" => "Senegal", "sv" => "El Salvador", "th" => "Thailand", "tn" => "Tunisia", "tr" => "Turkey",
     "tt" => "Trinidad and Tobago", "tw" => "Taiwan", "tz" => "Tanzania", "ua" => "Ukraine", "us" => "United States",
-    "uy" => "Uruguay", "uz" => "Uzbekistan", "vn" => "Vietnam", "za" => "South Africa", "zm" => "Zambia", "zw" => "Zimbabwe"
+    "uy" => "Uruguay", "uz" => "Uzbekistan", "vn" => "Vietnam", "za" => "South Africa", "zm" => "Zambia", "zw" => "Zimbabwe",
+    "lc" => "Saint Lucia", "mc" => "Monaco", "mg" => "Madagascar", "me" => "Montenegro", "bb" => "Barbados", 
+    "bs" => "Bahamas", "bz" => "Belize", "fj" => "Fiji", "gm" => "Gambia", "gy" => "Guyana", "mn" => "Mongolia", 
+    "ne" => "Niger", "mo" => "Macao", "pg" => "Papua New Guinea", "ps" => "Palestine", "sc" => "Seychelles", 
+    "sl" => "Sierra Leone", "sm" => "San Marino", "sr" => "Suriname", "sz" => "Eswatini"
 ];
-    $One =["al", "ad", "ae", "az", "ba", "be", "bg", "bh",
-    "bo", "br", "bw", "ch", "cr", "cy", "cz", "do", 
-    "dz", "ec", "ee", "eg", "es", 
+
+$One =["al", "ad", "ae", "az", "ba", "be", "bg", "bh",
+    "bo", "bw", "ch", "cr", "cy", "cz", "do", 
+    "dz", "ec", "ee", "eg",
     "ge", "gh", "gr", "gt",  "hk", "hn", "hr", "hu", 
-    "id", "ie", "il", "in", "is", "jm", "jo", "jp", 
+ "il", "is", "jm", "jo",
     "ke", "kh", "kr", "kw", "lb", "lt", "lu", "lv", 
     "ma", "mk", "mt", "mu", 
-    "mw", "mx", "my", "mz", "na", "ng", "ni",  "np",  
-    "om", "pa", "pe", "ph",  "pt", "py","qa", 
+    "mw", "my", "mz", "na", "ng", "ni",  "np",  
+    "om", "pa", "pe", "pt", "py","qa", 
     "ro", "rs", "rw" , 
-    "sa", "se", "sg", "si", "sk", "sn", "sv", "th", 
+    "sa", "sg", "si", "sk", "sn", "sv", "th", 
     "tn", "tr", "tt", "tw", "tz", "ua", "uy", "uz", 
     "vn", "za", "zm", "zw", 
     "lc", "mc", "mg", "me", "bb", "bs", "bz", "fj",   
@@ -48,6 +53,7 @@ $CATEGORIES_20 = [
 
 $CATEGORIES_3 = ["top", "trending", "top_episodes"];
 $CATEGORIES_1 = ["top"];
+
 function fetchWithRetry($url, $retries = 3, $delay = 5) {
     $attempt = 0;
     while ($attempt < $retries) {
@@ -88,21 +94,48 @@ if ($mysqli->connect_errno) {
     die("Failed to connect to MySQL: " . $mysqli->connect_error);
 }
 
-// ✅ Updated table to also store episodeId and episodeName
-$insert_sql = "INSERT INTO `spotify_all_countries`
+// Create table with timestamp-based name
+$timestamp = date("Ymd_His");
+$newTable = "spotify_charts_$timestamp";
+
+$createSQL = "CREATE TABLE `$newTable` (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    showId VARCHAR(255) NOT NULL,
+    showName VARCHAR(255) NOT NULL,
+    showPublisher VARCHAR(255) DEFAULT NULL,
+    showImageUrl TEXT DEFAULT NULL,
+    showDescription TEXT DEFAULT NULL,
+    countryName VARCHAR(100) NOT NULL,
+    countryCode VARCHAR(10) NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    chart_rank INT NOT NULL,
+    chartRankMove VARCHAR(100) DEFAULT NULL,
+    episodeId VARCHAR(255) DEFAULT NULL,
+    episodeName VARCHAR(255) DEFAULT NULL,
+    movement INT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci";
+
+if (!$mysqli->query($createSQL)) {
+    die("Failed to create table: " . $mysqli->error);
+}
+echo "[INFO] Table '$newTable' created successfully.\n";
+
+$insert_sql = "INSERT INTO `$newTable`
     (showId, showName, showPublisher, showImageUrl, showDescription,
-     countryName, countryCode, category,chart_rank, movement,episodeId, episodeName, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,NOW())";
+     countryName, countryCode, category, chart_rank, chartRankMove, episodeId, episodeName, movement)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 $stmt = $mysqli->prepare($insert_sql);
 if (!$stmt) {
     die("Prepare failed: " . $mysqli->error);
 }
 
-$countries = array_unique(array_merge($Three, $Seventeen));
+$countries = array_unique(array_merge($One, $Three, $Seventeen));
 
 foreach ($countries as $country) {
-    $categories = in_array($country, $Seventeen) ? $CATEGORIES_20 : (in_array($country, $Three)? $CATEGORIES_3 : $CATEGORIES_1);
+    $categories = in_array($country, $Seventeen) ? $CATEGORIES_20 : 
+                 (in_array($country, $Three) ? $CATEGORIES_3 : $CATEGORIES_1);
 
     foreach ($categories as $category) {
         $url = "https://podcastcharts.byspotify.com/api/charts/$category?region=$country";
@@ -133,9 +166,9 @@ foreach ($countries as $country) {
             $showDescription = $item['showDescription'] ?? '';
             $countryName     = $COUNTRY_NAMES[$country] ?? '';
             $categoryName    = ucwords(str_replace('-', ' ', $category));
-            $movement = $item['chartRankMove'] ?? "";
-            // ✅ Episode details (only for top_episode
-            // s)
+            $chartRankMove   = $item['chartRankMove'] ?? "";
+            
+            // Episode details (only for top_episodes)
             $episodeId   = null;
             $episodeName = null;
             if ($category === "top_episodes") {
@@ -143,11 +176,11 @@ foreach ($countries as $country) {
                     $parts = explode(':', $item['episodeUri']);
                     $episodeId = $parts[2] ?? '';
                 } 
-                $episodeName = $item['name'] ?? ''; 
+                $episodeName = $item['episodeName'] ?? ''; 
             }
 
             $stmt->bind_param(
-                "ssssssssisss",
+                "ssssssssisisi",
                 $showId,
                 $showName,
                 $showPublisher,
@@ -157,9 +190,10 @@ foreach ($countries as $country) {
                 $country,
                 $categoryName,
                 $rank,
-                $movement,
+                $chartRankMove,
                 $episodeId,
-                $episodeName
+                $episodeName,
+                null // movement set to null - will be calculated later
             );
 
             if (!$stmt->execute()) {
@@ -177,4 +211,5 @@ foreach ($countries as $country) {
 $stmt->close();
 $mysqli->close();
 
-echo "[DONE] Completed fetching and inserting podcast charts.\n";
+echo "[DONE] Completed fetching and inserting podcast charts into table '$newTable'.\n";
+?>
