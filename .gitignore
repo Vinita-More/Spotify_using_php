@@ -5,3 +5,5 @@ try.php
 *.txt
 
 *.csv
+
+*.log

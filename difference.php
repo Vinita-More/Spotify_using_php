@@ -1,4 +1,5 @@
 <?php
+// JOIN approach with adding new table for storing data
 include "./config.php";
 $start_time = microtime(true);
 echo "start time ". $start_time . " in microtime \n";
