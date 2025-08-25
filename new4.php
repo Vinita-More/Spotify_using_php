@@ -3,9 +3,7 @@ include_once './config.php';
 
 date_default_timezone_set("Asia/Kolkata");
 
-// ==========================
 // Country + Category Setup
-// ==========================
 $COUNTRY_NAMES = [
     "ad" => "Andorra", "ae" => "United Arab Emirates", "al" => "Albania", "ar" => "Argentina", "at" => "Austria", "au" => "Australia",
     "az" => "Azerbaijan", "ba" => "Bosnia and Herzegovina", "be" => "Belgium", "bg" => "Bulgaria", "bh" => "Bahrain", "bo" => "Bolivia",
@@ -73,21 +71,275 @@ $CATEGORIES_3 = ["top", "trending"];
 $CATEGORIES_1 = ["top"];
 
 // ==========================
-// Logging
+// Smart Logging Logic
 // ==========================
-$timestamp = date("Ymd_His");
-$success_log = "success_$timestamp.log";
-$error_log   = "error_$timestamp.log";
+function initializeLogFiles($is_resuming = false, $existing_table = null) {
+    global $success_log, $error_log;
+    
+    if ($is_resuming && $existing_table) {
+        // Extract timestamp from existing table name
+        // Format: spotify_charts_YYYYMMDD_HHMMSS
+        preg_match('/spotify_charts_(\d{8}_\d{6})/', $existing_table, $matches);
+        
+        if (!empty($matches[1])) {
+            $existing_timestamp = $matches[1];
+            $success_log = "success_$existing_timestamp.log";
+            $error_log = "error_$existing_timestamp.log";
+            
+            // Check if the log files exist
+            if (file_exists($success_log) || file_exists($error_log)) {
+                writeLog("🔄 RESUMING: Using existing log files", 'INFO');
+                writeLog("   - Success log: $success_log", 'INFO');
+                writeLog("   - Error log: $error_log", 'INFO');
+                return;
+            }
+        }
+    }
+    
+    // Create new log files with current timestamp
+    $timestamp = date("Ymd_His");
+    $success_log = "success_$timestamp.log";
+    $error_log = "error_$timestamp.log";
+    
+    if (!$is_resuming) {
+        writeLog("🆕 NEW RUN: Created new log files", 'INFO');
+    } else {
+        writeLog("🔄 RESUMING: Created new log files (existing logs not found)", 'INFO');
+    }
+    writeLog("   - Success log: $success_log", 'INFO');
+    writeLog("   - Error log: $error_log", 'INFO');
+}
+
+// Initialize empty log file variables (will be set by initializeLogFiles)
+$success_log = '';
+$error_log = '';
 
 function writeLog($message, $type = 'INFO') {
     global $success_log, $error_log;
+    
+    // Safety check - if log files aren't initialized, create temporary ones
+    if (empty($success_log) || empty($error_log)) {
+        $temp_timestamp = date("Ymd_His");
+        $success_log = "success_temp_$temp_timestamp.log";
+        $error_log = "error_temp_$temp_timestamp.log";
+    }
+    
     $formatted_message = "[" . date('Y-m-d H:i:s') . "] [$type] $message" . PHP_EOL;
+    
     if ($type === 'ERROR' || $type === 'WARN') {
         file_put_contents($error_log, $formatted_message, FILE_APPEND | LOCK_EX);
     } else {
         file_put_contents($success_log, $formatted_message, FILE_APPEND | LOCK_EX);
     }
     echo $formatted_message;
+}
+
+// ==========================
+// Progress Tracking via Log Analysis
+// ==========================
+function getTableStatusFromLogs($existing_table) {
+    // Extract timestamp from table name to find corresponding log files
+    preg_match('/spotify_charts_(\d{8}_\d{6})/', $existing_table, $matches);
+    
+    if (empty($matches[1])) {
+        writeLog("Could not extract timestamp from table name: $existing_table", 'WARN');
+        return null;
+    }
+    
+    $timestamp = $matches[1];
+    $success_log_file = "success_$timestamp.log";
+    $error_log_file = "error_$timestamp.log";
+    
+    writeLog("Checking table status from logs: $success_log_file, $error_log_file", 'INFO');
+    
+    // Check if log files exist
+    if (!file_exists($success_log_file) && !file_exists($error_log_file)) {
+        writeLog("No log files found for table $existing_table", 'INFO');
+        return null;
+    }
+    
+    $status = [
+        'completed' => false,
+        'last_country' => null,
+        'last_category' => null,
+        'error_occurred' => false,
+        'completion_status' => 'unknown'
+    ];
+    
+    // Check success log for completion status
+    if (file_exists($success_log_file)) {
+        $success_content = file_get_contents($success_log_file);
+        
+        // Check if script completed successfully
+        if (strpos($success_content, 'All countries processed successfully') !== false ||
+            strpos($success_content, 'Script completed successfully') !== false) {
+            $status['completed'] = true;
+            $status['completion_status'] = 'completed';
+            writeLog("✅ Previous run completed successfully according to logs", 'INFO');
+            return $status;
+        }
+        
+        // Find last processed country from success log
+        $success_lines = explode("\n", $success_content);
+        $success_lines = array_reverse($success_lines); // Start from end
+        
+        foreach ($success_lines as $line) {
+            // Look for "Completed country: XX" pattern
+            if (preg_match('/Completed country: ([A-Z]{2})/i', $line, $matches)) {
+                $status['last_country'] = strtolower($matches[1]);
+                writeLog("Found last completed country from success log: {$status['last_country']}", 'INFO');
+                break;
+            }
+            // Look for "Inserted X rows for country - category" pattern
+            if (preg_match('/Inserted \d+ rows for ([a-z]{2}) - (.+)$/i', $line, $matches)) {
+                $status['last_country'] = strtolower($matches[1]);
+                $status['last_category'] = trim($matches[2]);
+                writeLog("Found last processed from success log: {$status['last_country']} - {$status['last_category']}", 'INFO');
+                break;
+            }
+        }
+    }
+    
+    // Check error log for any critical errors
+    if (file_exists($error_log_file)) {
+        $error_content = file_get_contents($error_log_file);
+        
+        // Check for critical errors that would indicate incomplete processing
+        $critical_errors = [
+            'Failed to create table',
+            'Prepare failed',
+            'Failed to connect to MySQL',
+            'FATAL',
+            'die('
+        ];
+        
+        foreach ($critical_errors as $error_pattern) {
+            if (strpos($error_content, $error_pattern) !== false) {
+                $status['error_occurred'] = true;
+                $status['completion_status'] = 'failed';
+                writeLog("❌ Critical error found in previous run: $error_pattern", 'ERROR');
+                break;
+            }
+        }
+        
+        // Look for last processed information in error logs too
+        if (!$status['last_country']) {
+            $error_lines = explode("\n", $error_content);
+            $error_lines = array_reverse($error_lines);
+            
+            foreach ($error_lines as $line) {
+                if (preg_match('/Failed after retries: ([A-Z]{2})/i', $line, $matches)) {
+                    $status['last_country'] = strtolower($matches[1]);
+                    $status['completion_status'] = 'interrupted';
+                    writeLog("Found interruption point from error log: {$status['last_country']}", 'INFO');
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Determine completion status if not already set
+    if ($status['completion_status'] === 'unknown') {
+        if ($status['last_country']) {
+            $status['completion_status'] = 'interrupted';
+        } else {
+            $status['completion_status'] = 'unclear';
+        }
+    }
+    
+    writeLog("Table status analysis complete:", 'INFO');
+    writeLog("- Completion Status: {$status['completion_status']}", 'INFO');
+    writeLog("- Last Country: " . ($status['last_country'] ?? 'unknown'), 'INFO');
+    writeLog("- Last Category: " . ($status['last_category'] ?? 'unknown'), 'INFO');
+    writeLog("- Error Occurred: " . ($status['error_occurred'] ? 'yes' : 'no'), 'INFO');
+    
+    return $status;
+}
+
+function findExistingTable($mysqli, $date = null) {
+    if ($date === null) {
+        $date = date("Ymd");
+    }
+    
+    $search_pattern = "spotify_charts_{$date}_";
+    $sql = "SELECT table_name FROM information_schema.tables 
+            WHERE table_schema = DATABASE() 
+            AND table_name LIKE '{$search_pattern}%' 
+            ORDER BY table_name DESC 
+            LIMIT 1";
+    
+    $result = $mysqli->query($sql);
+    if ($result && $result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        return $row['table_name'] ?? $row['TABLE_NAME'] ?? null;
+    }
+    return null;
+}
+
+function getLastProcessedCountryCategory($mysqli, $table_name) {
+    // Get the last processed country and category
+    $sql = "SELECT countryCode, category, MAX(id) as last_id 
+            FROM `$table_name` 
+            GROUP BY countryCode, category 
+            ORDER BY last_id DESC 
+            LIMIT 1";
+    
+    $result = $mysqli->query($sql);
+    if ($result && $result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        return [
+            'country' => $row['countryCode'],
+            'category' => $row['category'],
+            'last_id' => $row['last_id']
+        ];
+    }
+    return null;
+}
+
+function cleanupLastCountryData($mysqli, $table_name, $country) {
+    // Delete all data for the last country to start fresh
+    $delete_sql = "DELETE FROM `$table_name` WHERE countryCode = ?";
+    $stmt = $mysqli->prepare($delete_sql);
+    $stmt->bind_param("s", $country);
+    $result = $stmt->execute();
+    $deleted_rows = $mysqli->affected_rows;
+    $stmt->close();
+    
+    writeLog("Cleaned up $deleted_rows rows for country: $country", 'INFO');
+    return $result;
+}
+
+function getResumePosition($all_countries, $resume_country) {
+    $position = array_search($resume_country, $all_countries);
+    return $position !== false ? $position : 0;
+}
+
+function shouldResumeProcessing($table_status) {
+    if (!$table_status) {
+        return false;
+    }
+    
+    // Don't resume if previous run completed successfully
+    if ($table_status['completed']) {
+        writeLog("Previous run completed successfully - no need to resume", 'INFO');
+        return false;
+    }
+    
+    // Don't resume if there was a critical error
+    if ($table_status['error_occurred']) {
+        writeLog("Previous run had critical errors - starting fresh", 'WARN');
+        return false;
+    }
+    
+    // Resume if we have a clear interruption point
+    if ($table_status['completion_status'] === 'interrupted' && $table_status['last_country']) {
+        writeLog("Previous run was interrupted - will resume from: {$table_status['last_country']}", 'INFO');
+        return true;
+    }
+    
+    // For unclear status, check if table has significant data
+    writeLog("Status unclear - will check table data to decide", 'INFO');
+    return 'check_data'; // Special return value to indicate data check needed
 }
 
 // ==========================
@@ -372,37 +624,120 @@ function deleteOldTables($mysqli, $days_back = 3) {
 // ==========================
 $mysqli = new mysqli($db_host, $db_user, $db_pass, $db_name);
 if ($mysqli->connect_errno) {
+    // Initialize temporary log files for this error
+    $timestamp = date("Ymd_His");
+    $success_log = "success_$timestamp.log";
+    $error_log = "error_$timestamp.log";
     writeLog("Failed to connect to MySQL: " . $mysqli->connect_error, 'ERROR');
     die("Failed to connect to MySQL: " . $mysqli->connect_error);
 }
 
 // ==========================
-// Create today table
+// Check for existing incomplete table and resume logic
 // ==========================
-$today_table = "spotify_charts_$timestamp";
-$createSQL = "CREATE TABLE `$today_table` (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    showId VARCHAR(255) NOT NULL,
-    showName VARCHAR(255) NOT NULL,
-    showPublisher VARCHAR(255) DEFAULT NULL,
-    showImageUrl TEXT DEFAULT NULL,
-    showDescription TEXT DEFAULT NULL,
-    countryName VARCHAR(100) NOT NULL,
-    countryCode VARCHAR(10) NOT NULL,
-    category VARCHAR(50) NOT NULL,
-    chart_rank INT NOT NULL,
-    y_rank INT DEFAULT NULL,
-    chartRankMove VARCHAR(100) DEFAULT NULL,
-    cal_move VARCHAR(100) NOT NULL,
-    movement INT DEFAULT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci";
+$existing_table = findExistingTable($mysqli);
+$is_resuming = false;
+$start_country_index = 0;
 
-if (!$mysqli->query($createSQL)) {
-    writeLog("Failed to create table: " . $mysqli->error, 'ERROR');
-    die("Failed to create table: " . $mysqli->error);
+if ($existing_table) {
+    // Initialize log files for resuming (this will try to use existing log files)
+    initializeLogFiles(true, $existing_table);
+    
+    writeLog("Found existing table for today: $existing_table", 'INFO');
+    
+    // Get table status from log files
+    $table_status = getTableStatusFromLogs($existing_table);
+    $should_resume = shouldResumeProcessing($table_status);
+    
+    if ($should_resume === true) {
+        // Clear resume based on log analysis
+        $last_country = $table_status['last_country'];
+        
+        // Clean up the last country's data and resume from that country
+        cleanupLastCountryData($mysqli, $existing_table, $last_country);
+        
+        // Find the position of the last country in our array
+        $start_country_index = getResumePosition($all_countries, $last_country);
+        $is_resuming = true;
+        $today_table = $existing_table;
+        
+        writeLog("🔄 RESUMING from country index $start_country_index ({$last_country}) based on log analysis", 'INFO');
+        
+    } elseif ($should_resume === 'check_data') {
+        // Fall back to database analysis when log status is unclear
+        writeLog("Log status unclear - checking database records...", 'INFO');
+        
+        // Check if table has data
+        $count_sql = "SELECT COUNT(*) as count FROM `$existing_table`";
+        $count_result = $mysqli->query($count_sql);
+        $count_row = $count_result->fetch_assoc();
+        $existing_records = $count_row['count'];
+        
+        if ($existing_records > 0) {
+            writeLog("Table has $existing_records existing records. Checking for resume...", 'INFO');
+            
+            // Get last processed country/category from database
+            $last_processed = getLastProcessedCountryCategory($mysqli, $existing_table);
+            
+            if ($last_processed) {
+                $last_country = $last_processed['country'];
+                writeLog("Last processed from DB: Country={$last_country}, Category={$last_processed['category']}", 'INFO');
+                
+                // Clean up the last country's data and resume from that country
+                cleanupLastCountryData($mysqli, $existing_table, $last_country);
+                
+                // Find the position of the last country in our array
+                $start_country_index = getResumePosition($all_countries, $last_country);
+                $is_resuming = true;
+                $today_table = $existing_table;
+                
+                writeLog("🔄 RESUMING from country index $start_country_index ({$last_country}) based on DB analysis", 'INFO');
+            }
+        } else {
+            writeLog("Table is empty - will reuse existing table", 'INFO');
+            $is_resuming = true;
+            $today_table = $existing_table;
+            $start_country_index = 0;
+        }
+    } else {
+        // Don't resume - either completed or had errors
+        writeLog("Will not resume - creating new table", 'INFO');
+    }
+} else {
+    // Initialize log files for new run
+    initializeLogFiles(false);
 }
-writeLog("Table '$today_table' created successfully.", 'INFO');
+
+// ==========================
+// Create today table (only if not resuming)
+// ==========================
+if (!$is_resuming) {
+    $timestamp = date("Ymd_His");
+    $today_table = "spotify_charts_$timestamp";
+    $createSQL = "CREATE TABLE `$today_table` (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        showId VARCHAR(255) NOT NULL,
+        showName VARCHAR(255) NOT NULL,
+        showPublisher VARCHAR(255) DEFAULT NULL,
+        showImageUrl TEXT DEFAULT NULL,
+        showDescription TEXT DEFAULT NULL,
+        countryName VARCHAR(100) NOT NULL,
+        countryCode VARCHAR(10) NOT NULL,
+        category VARCHAR(50) NOT NULL,
+        chart_rank INT NOT NULL,
+        y_rank INT DEFAULT NULL,
+        chartRankMove VARCHAR(100) DEFAULT NULL,
+        cal_move VARCHAR(100) NOT NULL,
+        movement INT DEFAULT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci";
+
+    if (!$mysqli->query($createSQL)) {
+        writeLog("Failed to create table: " . $mysqli->error, 'ERROR');
+        die("Failed to create table: " . $mysqli->error);
+    }
+    writeLog("Table '$today_table' created successfully.", 'INFO');
+}
 
 // ==========================
 // Prepare insert
@@ -417,13 +752,17 @@ if (!$stmt) {
     writeLog("Prepare failed: " . $mysqli->error, 'ERROR');
     die("Prepare failed: " . $mysqli->error);
 }
+
 // ==========================
-// Fetch & Insert with retry tracking
+// Fetch & Insert with retry tracking (starting from resume position)
 // ==========================
 $countries = $all_countries;
 $failed_combos = [];
 
-foreach ($countries as $country) {
+// Start from the resume position
+for ($i = $start_country_index; $i < count($countries); $i++) {
+    $country = $countries[$i];
+    
     $categories = in_array($country, $Seventeen) ? $CATEGORIES_20 : 
                  (in_array($country, $Three) ? $CATEGORIES_3 : $CATEGORIES_1);
 
@@ -461,7 +800,7 @@ foreach ($countries as $country) {
                 $country,
                 $categoryName,
                 $rank,
-                $chartRankMove,
+                $chartRankMove
             );
             if (!$stmt->execute()) {
                 writeLog("Insert failed for $country - $category - " . $stmt->error, 'ERROR');
@@ -470,8 +809,11 @@ foreach ($countries as $country) {
             $rank++;
         }
         writeLog("Inserted " . count($items) . " rows for $country - $category", 'INFO');
+        
         sleep(2);
     }
+    
+    writeLog("✓ Completed country: " . strtoupper($country), 'INFO');
 }
 
 // Retry failed combos once more
@@ -514,10 +856,14 @@ foreach ($failed_combos as $combo) {
     }
 }
 
+// Processing completed successfully
+writeLog("✅ All countries processed successfully. Script completed.", 'INFO');
+
 
 // ==========================
 // Compare with yesterday for movement 
 // ==========================
+function movement_calculation($mysqli,$db_name,$today_table){
 $yesterday_date = date('Ymd', strtotime('-1 day'));
 $search_pattern = "spotify_charts_{$yesterday_date}_";
 
@@ -627,10 +973,11 @@ if ($yesterday_table) {
 } else {
     writeLog("No yesterday table found to compare.", 'WARN');
 }
-
+}
+movement_calculation($mysqli,$db_name,$today_table);
 deleteOldTables($mysqli, $days_back = 3);
 
 $stmt->close();
 $mysqli->close();
-writeLog("Script completed.", 'INFO');
+writeLog("Script completed successfully.", 'INFO');
 ?>

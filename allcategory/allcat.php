@@ -49,13 +49,13 @@ $COUNTRY_NAMES = [
 ];
 
 $One = ["al", "ad", "ae", "az", "ba", "be", "bg", "bh", "bo", "bw", "ch", "cr", "cy", "cz", "do", 
-    "dz", "ec", "ee", "eg", "ge", "gh", "gr", "gt", "hk", "hn", "hr", "hu", 
-    "il", "is", "jm", "jo", "ke", "kh", "kr", "kw", "lb", "lt", "lu", "lv", 
-    "ma", "mk", "mt", "mu", "mw", "my", "mz", "na", "ng", "ni", "np",  
-    "om", "pa", "pe", "pt", "py","qa", "ro", "rs", "rw" , "sa", "sg", "si", 
-    "sk", "sn", "sv", "th", "tn", "tr", "tt", "tw", "tz", "ua", "uy", "uz", 
-    "vn", "za", "zm", "zw", "lc", "mc", "mg", "me", "bb", "bs", "bz", "fj",   
-    "gm", "gy", "mn", "ne", "mo", "pg", "ps", "sc", "sl", "sm", "sr", "sz"];
+        "dz", "ec", "ee", "eg", "ge", "gh", "gr", "gt", "hk", "hn", "hr", "hu", 
+        "il", "is", "jm", "jo", "ke", "kh", "kr", "kw", "lb", "lt", "lu", "lv", 
+        "ma", "mk", "mt", "mu", "mw", "my", "mz", "na", "ng", "ni", "np",  
+        "om", "pa", "pe", "pt", "py","qa", "ro", "rs", "rw" , "sa", "sg", "si", 
+        "sk", "sn", "sv", "th", "tn", "tr", "tt", "tw", "tz", "ua", "uy", "uz", 
+        "vn", "za", "zm", "zw", "lc", "mc", "mg", "me", "bb", "bs", "bz", "fj",   
+        "gm", "gy", "mn", "ne", "mo", "pg", "ps", "sc", "sl", "sm", "sr", "sz"];
 
 $Three = ["ar", "at", "ca", "cl", "co", "dk", "fi", "fr", "in", "id", "ie", "it", "jp", "nz", "no", "ph", "es", "nl", "pl"];
 $Seventeen = ["au", "us", "gb", "br", "de", "mx", "se"];
@@ -134,7 +134,9 @@ $createSQL = "CREATE TABLE `spotify_charts_$timestamp` (
     countryCode VARCHAR(10) NOT NULL,
     category VARCHAR(50) NOT NULL,
     chart_rank INT NOT NULL,
+    y_rank INT DEFAULT NULL,
     chartRankMove VARCHAR(100) DEFAULT NULL,
+    cal_move VARCHAR(100) NOT NULL,
     movement INT DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci";
@@ -191,7 +193,7 @@ foreach ($countries as $country) {
             $countryName     = $COUNTRY_NAMES[$country] ?? '';
 
             // Use clean category name
-            $categoryName    = ucwords(str_replace('-', ' ', $category));;
+            $categoryName    = ucwords(str_replace('-', ' ', $category));
             $chartRankMove = $item['chartRankMove'] ?? "";
             $movement = null;
 
@@ -218,7 +220,7 @@ foreach ($countries as $country) {
         }
 
         writeLog("Inserted " . count($items) . " rows for " . strtoupper($country) . " - $category", 'INFO');
-        sleep(2);
+        sleep(1);
     }
 }
 

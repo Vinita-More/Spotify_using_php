@@ -1,8 +1,8 @@
 <?php
 include_once './config.php';
-
+global $db_name, $mysqli, $today_table;
 date_default_timezone_set("Asia/Kolkata");
-
+global $db_name, $mysqli, $today_table;
 // ==========================
 // Country + Category Setup
 // ==========================
@@ -71,7 +71,7 @@ $CATEGORIES_20 = [
 ];
 $CATEGORIES_3 = ["top", "trending"];
 $CATEGORIES_1 = ["top"];
-
+$db_name = $db_name;
 // ==========================
 // Logging
 // ==========================
@@ -88,6 +88,424 @@ function writeLog($message, $type = 'INFO') {
         file_put_contents($success_log, $formatted_message, FILE_APPEND | LOCK_EX);
     }
     echo $formatted_message;
+}
+
+// ==========================
+// Resume Progress Functions
+// ==========================
+function saveProgress($country, $category, $status = 'started') {
+    $progress = [
+        'timestamp' => date('Y-m-d H:i:s'),
+        'country' => $country,
+        'category' => $category,
+        'status' => $status,
+        'completed' => false
+    ];
+    file_put_contents('scraping_progress.json', json_encode($progress, JSON_PRETTY_PRINT));
+}
+
+function markScrapingCompleted() {
+    $progress = [
+        'timestamp' => date('Y-m-d H:i:s'),
+        'status' => 'fully_completed',
+        'completed' => true,
+        'completion_time' => date('Y-m-d H:i:s')
+    ];
+    file_put_contents('scraping_progress.json', json_encode($progress, JSON_PRETTY_PRINT));
+}
+
+function loadProgress() {
+    if (file_exists('scraping_progress.json')) {
+        $content = file_get_contents('scraping_progress.json');
+        return json_decode($content, true);
+    }
+    return null;
+}
+
+function isScrapingComplete() {
+    if (file_exists('scraping_progress.json')) {
+        $content = file_get_contents('scraping_progress.json');
+        $progress = json_decode($content, true);
+        
+        if ($progress && isset($progress['completed']) && $progress['completed'] === true) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function calculateExpectedRecords($all_countries, $One, $Three, $Seventeen) {
+    $expected = 0;
+    foreach ($all_countries as $country) {
+        if (in_array($country, $Seventeen)) {
+            $expected += 19 * 200; // 19 categories * ~200 shows per category
+        } elseif (in_array($country, $Three)) {
+            $expected += 2 * 200;  // 2 categories * ~200 shows per category  
+        } else {
+            $expected += 1 * 200;  // 1 category * ~200 shows per category
+        }
+    }
+    return $expected;
+}
+
+function validateTableCompleteness($mysqli, $table_name, $all_countries, $One, $Three, $Seventeen) {
+    // Check if all countries are represented
+    $country_check_sql = "SELECT DISTINCT countryCode FROM `$table_name` ORDER BY countryCode";
+    $result = $mysqli->query($country_check_sql);
+    
+    if (!$result) {
+        return ['complete' => false, 'reason' => 'Query error'];
+    }
+    
+    $found_countries = [];
+    while ($row = $result->fetch_assoc()) {
+        $found_countries[] = $row['countryCode'];
+    }
+    
+    $missing_countries = array_diff($all_countries, $found_countries);
+    
+    if (!empty($missing_countries)) {
+        return [
+            'complete' => false, 
+            'reason' => 'Missing countries: ' . implode(', ', $missing_countries),
+            'found_countries' => count($found_countries),
+            'expected_countries' => count($all_countries)
+        ];
+    }
+    
+    // Check if each country has the expected categories
+    foreach ($all_countries as $country) {
+        $expected_categories = 1; // Default for $One countries
+        if (in_array($country, $Seventeen)) {
+            $expected_categories = 19;
+        } elseif (in_array($country, $Three)) {
+            $expected_categories = 2;
+        }
+        
+        $cat_check_sql = "SELECT COUNT(DISTINCT category) as cat_count FROM `$table_name` WHERE countryCode = '$country'";
+        $cat_result = $mysqli->query($cat_check_sql);
+        
+        if ($cat_result) {
+            $cat_row = $cat_result->fetch_assoc();
+            $found_categories = $cat_row['cat_count'];
+            
+            if ($found_categories < $expected_categories) {
+                return [
+                    'complete' => false,
+                    'reason' => "Country $country has $found_categories categories, expected $expected_categories",
+                    'incomplete_country' => $country
+                ];
+            }
+        }
+    }
+    
+    return ['complete' => true, 'reason' => 'All countries and categories found'];
+}
+
+
+// Connect MySQL
+$mysqli = new mysqli($db_host, $db_user, $db_pass, $db_name);
+if ($mysqli->connect_errno) {
+    writeLog("Failed to connect to MySQL: " . $mysqli->connect_error, 'ERROR');
+    die("Failed to connect to MySQL: " . $mysqli->connect_error);
+}
+
+// ==========================
+// Check for existing incomplete table and resume logic
+// ==========================
+$existing_table = findExistingTable($mysqli);
+$is_resuming = false;
+$start_country_index = 0;
+
+if ($existing_table) {
+    writeLog("Found existing table for today: $existing_table", 'INFO');
+    
+    // Check if scraping was already completed successfully today
+    if (isScrapingComplete()) {
+        writeLog("✅ Scraping was already completed successfully today. Skipping data collection.", 'INFO');
+        writeLog("Table: $existing_table contains complete data.", 'INFO');
+        
+        // Skip to movement calculation part
+        $today_table = $existing_table;
+        movement_calculation();
+    }
+    
+    // Check if table has data
+    $count_sql = "SELECT COUNT(*) as count FROM `$existing_table`";
+    $count_result = $mysqli->query($count_sql);
+    $count_row = $count_result->fetch_assoc();
+    $existing_records = $count_row['count'];
+    
+    if ($existing_records > 0) {
+        writeLog("Table has $existing_records existing records. Validating completeness...", 'INFO');
+        
+        // Validate if the table is actually complete
+        $completeness_check = validateTableCompleteness($mysqli, $existing_table, $all_countries, $One, $Three, $Seventeen);
+        
+        if ($completeness_check['complete']) {
+            writeLog("✅ Table is COMPLETE! All countries and categories are present.", 'INFO');
+            writeLog("Marking scraping as completed and proceeding to movement calculation.", 'INFO');
+            
+            markScrapingCompleted();
+            $today_table = $existing_table;
+            movement_calculation();
+        } else {
+            writeLog("❌ Table is INCOMPLETE: " . $completeness_check['reason'], 'WARN');
+            
+            // Get last processed country/category for resumption
+            $last_processed = getLastProcessedCountryCategory($mysqli, $existing_table);
+            
+            if ($last_processed) {
+                $last_country = $last_processed['country'];
+                writeLog("Last processed: Country={$last_country}, Category={$last_processed['category']}", 'INFO');
+                
+                // Clean up the last country's data and resume from that country
+                cleanupLastCountryData($mysqli, $existing_table, $last_country);
+                
+                // Find the position of the last country in our array
+                $start_country_index = getResumePosition($all_countries, $last_country);
+                $is_resuming = true;
+                $today_table = $existing_table;
+                
+                writeLog("🔄 RESUMING from country index $start_country_index ({$last_country})", 'INFO');
+            } else {
+                writeLog("Could not determine last processed country. Starting fresh.", 'WARN');
+                // Drop the incomplete table and start fresh
+                $drop_sql = "DROP TABLE IF EXISTS `$existing_table`";
+                $mysqli->query($drop_sql);
+                writeLog("Dropped incomplete table and starting fresh.", 'INFO');
+            }
+        }
+    } else {
+        writeLog("Table exists but is empty. Will use this table.", 'INFO');
+        $today_table = $existing_table;
+        $is_resuming = true; // Use existing empty table
+    }
+}
+
+// ==========================
+// Create today table (only if not resuming)
+// ==========================
+if (!$is_resuming) {
+    $today_table = "spotify_charts_$timestamp";
+    $createSQL = "CREATE TABLE `$today_table` (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        showId VARCHAR(255) NOT NULL,
+        showName VARCHAR(255) NOT NULL,
+        showPublisher VARCHAR(255) DEFAULT NULL,
+        showImageUrl TEXT DEFAULT NULL,
+        showDescription TEXT DEFAULT NULL,
+        countryName VARCHAR(100) NOT NULL,
+        countryCode VARCHAR(10) NOT NULL,
+        category VARCHAR(50) NOT NULL,
+        chart_rank INT NOT NULL,
+        y_rank INT DEFAULT NULL,
+        chartRankMove VARCHAR(100) DEFAULT NULL,
+        cal_move VARCHAR(100) NOT NULL,
+        movement INT DEFAULT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci";
+
+    if (!$mysqli->query($createSQL)) {
+        writeLog("Failed to create table: " . $mysqli->error, 'ERROR');
+        die("Failed to create table: " . $mysqli->error);
+    }
+    writeLog("Table '$today_table' created successfully.", 'INFO');
+}
+
+// ==========================
+// Prepare insert
+// ==========================
+$insert_sql = "INSERT INTO `$today_table`
+    (showId, showName, showPublisher, showImageUrl, showDescription,
+     countryName, countryCode, category, chart_rank, chartRankMove)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+$stmt = $mysqli->prepare($insert_sql);
+if (!$stmt) {
+    writeLog("Prepare failed: " . $mysqli->error, 'ERROR');
+    die("Prepare failed: " . $mysqli->error);
+}
+
+// ==========================
+// Fetch & Insert with retry tracking (starting from resume position)
+// ==========================
+$countries = $all_countries;
+$failed_combos = [];
+
+// Start from the resume position
+for ($i = $start_country_index; $i < count($countries); $i++) {
+    $country = $countries[$i];
+    
+    // Save progress
+    saveProgress($country, 'starting');
+    
+    $categories = in_array($country, $Seventeen) ? $CATEGORIES_20 : 
+                 (in_array($country, $Three) ? $CATEGORIES_3 : $CATEGORIES_1);
+
+    foreach ($categories as $category) {
+        // Update progress with current category
+        saveProgress($country, $category, 'processing');
+        
+        $url = "https://podcastcharts.byspotify.com/api/charts/$category?region=$country";
+        writeLog("Fetching " . strtoupper($country) . " - $category → $url", 'INFO');
+
+        $data = fetchWithRetry($url);
+        if ($data === null) {
+            $failed_combos[] = [$country, $category];
+            writeLog("Failed after retries: " . strtoupper($country) . " - $category", 'WARN');
+            continue;
+        }
+
+        $items = $data['items'] ?? (is_array($data) ? $data : []);
+        $rank = 1;
+        foreach ($items as $item) {
+            $showUri = $item['showUri'] ?? "";
+            $showId = $showUri ? explode(":", $showUri)[count(explode(":", $showUri)) - 1] : "";
+            $showName        = $item['showName'] ?? '';
+            $showPublisher   = $item['showPublisher'] ?? '';
+            $showImageUrl    = $item['showImageUrl'] ?? '';
+            $showDescription = $item['showDescription'] ?? '';
+            $countryName     = $COUNTRY_NAMES[$country] ?? '';
+            $categoryName    = ucwords(str_replace(['%252520', '%2526', '-'], [' ', ' And ', ' '], $category));
+            $chartRankMove = $item['chartRankMove'] ?? "";
+            $stmt->bind_param(
+                "ssssssssis",
+                $showId,
+                $showName,
+                $showPublisher,
+                $showImageUrl,
+                $showDescription,
+                $countryName,
+                $country,
+                $categoryName,
+                $rank,
+                $chartRankMove,
+            );
+            if (!$stmt->execute()) {
+                writeLog("Insert failed for $country - $category - " . $stmt->error, 'ERROR');
+                $failed_combos[] = [$country, $category];
+            }
+            $rank++;
+        }
+        writeLog("Inserted " . count($items) . " rows for $country - $category", 'INFO');
+        
+        // Mark category as completed
+        saveProgress($country, $category, 'completed');
+        
+        sleep(2);
+    }
+    
+    writeLog("✓ Completed country: " . strtoupper($country), 'INFO');
+}
+
+// Retry failed combos once more
+foreach ($failed_combos as $combo) {
+    list($country, $category) = $combo;
+    $url = "https://podcastcharts.byspotify.com/api/charts/$category?region=$country";
+    writeLog("Retrying failed combo: $country - $category", 'INFO');
+    $data = fetchWithRetry($url);
+    if ($data === null) {
+        writeLog("Retry failed for $country - $category", 'ERROR');
+        continue;
+    }
+    $items = $data['items'] ?? (is_array($data) ? $data : []);
+    $rank = 1;
+    foreach ($items as $item) {
+            $showUri = $item['showUri'] ?? "";
+            $showId = $showUri ? explode(":", $showUri)[count(explode(":", $showUri)) - 1] : "";
+            $showName        = $item['showName'] ?? '';
+            $showPublisher   = $item['showPublisher'] ?? '';
+            $showImageUrl    = $item['showImageUrl'] ?? '';
+            $showDescription = $item['showDescription'] ?? '';
+            $countryName     = $COUNTRY_NAMES[$country] ?? '';
+            $categoryName    = ucwords(str_replace(['%252520', '%2526', '-'], [' ', ' And ', ' '], $category));
+            $chartRankMove = $item['chartRankMove'] ?? "";
+            $stmt->bind_param(
+                "ssssssssis",
+                $showId,
+                $showName,
+                $showPublisher,
+                $showImageUrl,
+                $showDescription,
+                $countryName,
+                $country,
+                $categoryName,
+                $rank,
+                $chartRankMove,
+            );
+        $stmt->execute();
+        $rank++;
+    }
+}
+
+// Clear progress file when scraping is completed successfully
+clearProgress();
+writeLog("✅ All countries processed successfully. Progress file cleared.", 'INFO');
+movement_calculation();
+
+function clearProgress() {
+    if (file_exists('scraping_progress.json')) {
+        unlink('scraping_progress.json');
+    }
+}
+
+function findExistingTable($mysqli, $date = null) {
+    if ($date === null) {
+        $date = date("Ymd");
+    }
+    
+    $search_pattern = "spotify_charts_{$date}_";
+    $sql = "SELECT table_name FROM information_schema.tables 
+            WHERE table_schema = DATABASE() 
+            AND table_name LIKE '{$search_pattern}%' 
+            ORDER BY table_name DESC 
+            LIMIT 1";
+    
+    $result = $mysqli->query($sql);
+    if ($result && $result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        return $row['table_name'] ?? $row['TABLE_NAME'] ?? null;
+    }
+    return null;
+}
+
+function getLastProcessedCountryCategory($mysqli, $table_name) {
+    // Get the last processed country and category
+    $sql = "SELECT countryCode, category, MAX(id) as last_id 
+            FROM `$table_name` 
+            GROUP BY countryCode, category 
+            ORDER BY last_id DESC 
+            LIMIT 1";
+    
+    $result = $mysqli->query($sql);
+    if ($result && $result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        return [
+            'country' => $row['countryCode'],
+            'category' => $row['category'],
+            'last_id' => $row['last_id']
+        ];
+    }
+    return null;
+}
+
+function cleanupLastCountryData($mysqli, $table_name, $country) {
+    // Delete all data for the last country to start fresh
+    $delete_sql = "DELETE FROM `$table_name` WHERE countryCode = ?";
+    $stmt = $mysqli->prepare($delete_sql);
+    $stmt->bind_param("s", $country);
+    $result = $stmt->execute();
+    $deleted_rows = $mysqli->affected_rows;
+    $stmt->close();
+    
+    writeLog("Cleaned up $deleted_rows rows for country: $country", 'INFO');
+    return $result;
+}
+
+function getResumePosition($all_countries, $resume_country) {
+    $position = array_search($resume_country, $all_countries);
+    return $position !== false ? $position : 0;
 }
 
 // ==========================
@@ -366,158 +784,10 @@ function deleteOldTables($mysqli, $days_back = 3) {
     return $failed_count == 0;
 }
 
-
-// ==========================
-// Connect MySQL
-// ==========================
-$mysqli = new mysqli($db_host, $db_user, $db_pass, $db_name);
-if ($mysqli->connect_errno) {
-    writeLog("Failed to connect to MySQL: " . $mysqli->connect_error, 'ERROR');
-    die("Failed to connect to MySQL: " . $mysqli->connect_error);
-}
-
-// ==========================
-// Create today table
-// ==========================
-$today_table = "spotify_charts_$timestamp";
-$createSQL = "CREATE TABLE `$today_table` (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    showId VARCHAR(255) NOT NULL,
-    showName VARCHAR(255) NOT NULL,
-    showPublisher VARCHAR(255) DEFAULT NULL,
-    showImageUrl TEXT DEFAULT NULL,
-    showDescription TEXT DEFAULT NULL,
-    countryName VARCHAR(100) NOT NULL,
-    countryCode VARCHAR(10) NOT NULL,
-    category VARCHAR(50) NOT NULL,
-    chart_rank INT NOT NULL,
-    y_rank INT DEFAULT NULL,
-    chartRankMove VARCHAR(100) DEFAULT NULL,
-    cal_move VARCHAR(100) NOT NULL,
-    movement INT DEFAULT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci";
-
-if (!$mysqli->query($createSQL)) {
-    writeLog("Failed to create table: " . $mysqli->error, 'ERROR');
-    die("Failed to create table: " . $mysqli->error);
-}
-writeLog("Table '$today_table' created successfully.", 'INFO');
-
-// ==========================
-// Prepare insert
-// ==========================
-$insert_sql = "INSERT INTO `$today_table`
-    (showId, showName, showPublisher, showImageUrl, showDescription,
-     countryName, countryCode, category, chart_rank, chartRankMove)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
-$stmt = $mysqli->prepare($insert_sql);
-if (!$stmt) {
-    writeLog("Prepare failed: " . $mysqli->error, 'ERROR');
-    die("Prepare failed: " . $mysqli->error);
-}
-// ==========================
-// Fetch & Insert with retry tracking
-// ==========================
-$countries = $all_countries;
-$failed_combos = [];
-
-foreach ($countries as $country) {
-    $categories = in_array($country, $Seventeen) ? $CATEGORIES_20 : 
-                 (in_array($country, $Three) ? $CATEGORIES_3 : $CATEGORIES_1);
-
-    foreach ($categories as $category) {
-        $url = "https://podcastcharts.byspotify.com/api/charts/$category?region=$country";
-        writeLog("Fetching " . strtoupper($country) . " - $category → $url", 'INFO');
-
-        $data = fetchWithRetry($url);
-        if ($data === null) {
-            $failed_combos[] = [$country, $category];
-            writeLog("Failed after retries: " . strtoupper($country) . " - $category", 'WARN');
-            continue;
-        }
-
-        $items = $data['items'] ?? (is_array($data) ? $data : []);
-        $rank = 1;
-        foreach ($items as $item) {
-            $showUri = $item['showUri'] ?? "";
-            $showId = $showUri ? explode(":", $showUri)[count(explode(":", $showUri)) - 1] : "";
-            $showName        = $item['showName'] ?? '';
-            $showPublisher   = $item['showPublisher'] ?? '';
-            $showImageUrl    = $item['showImageUrl'] ?? '';
-            $showDescription = $item['showDescription'] ?? '';
-            $countryName     = $COUNTRY_NAMES[$country] ?? '';
-            $categoryName    = ucwords(str_replace(['%252520', '%2526', '-'], [' ', ' And ', ' '], $category));
-            $chartRankMove = $item['chartRankMove'] ?? "";
-            $stmt->bind_param(
-                "ssssssssis",
-                $showId,
-                $showName,
-                $showPublisher,
-                $showImageUrl,
-                $showDescription,
-                $countryName,
-                $country,
-                $categoryName,
-                $rank,
-                $chartRankMove,
-            );
-            if (!$stmt->execute()) {
-                writeLog("Insert failed for $country - $category - " . $stmt->error, 'ERROR');
-                $failed_combos[] = [$country, $category];
-            }
-            $rank++;
-        }
-        writeLog("Inserted " . count($items) . " rows for $country - $category", 'INFO');
-        sleep(2);
-    }
-}
-
-// Retry failed combos once more
-foreach ($failed_combos as $combo) {
-    list($country, $category) = $combo;
-    $url = "https://podcastcharts.byspotify.com/api/charts/$category?region=$country";
-    writeLog("Retrying failed combo: $country - $category", 'INFO');
-    $data = fetchWithRetry($url);
-    if ($data === null) {
-        writeLog("Retry failed for $country - $category", 'ERROR');
-        continue;
-    }
-    $items = $data['items'] ?? (is_array($data) ? $data : []);
-    $rank = 1;
-    foreach ($items as $item) {
-            $showUri = $item['showUri'] ?? "";
-            $showId = $showUri ? explode(":", $showUri)[count(explode(":", $showUri)) - 1] : "";
-            $showName        = $item['showName'] ?? '';
-            $showPublisher   = $item['showPublisher'] ?? '';
-            $showImageUrl    = $item['showImageUrl'] ?? '';
-            $showDescription = $item['showDescription'] ?? '';
-            $countryName     = $COUNTRY_NAMES[$country] ?? '';
-            $categoryName    = ucwords(str_replace(['%252520', '%2526', '-'], [' ', ' And ', ' '], $category));
-            $chartRankMove = $item['chartRankMove'] ?? "";
-            $stmt->bind_param(
-                "ssssssssis",
-                $showId,
-                $showName,
-                $showPublisher,
-                $showImageUrl,
-                $showDescription,
-                $countryName,
-                $country,
-                $categoryName,
-                $rank,
-                $chartRankMove,
-            );
-        $stmt->execute();
-        $rank++;
-    }
-}
-
-
 // ==========================
 // Compare with yesterday for movement 
 // ==========================
+function movement_calculation(){
 $yesterday_date = date('Ymd', strtotime('-1 day'));
 $search_pattern = "spotify_charts_{$yesterday_date}_";
 
@@ -525,7 +795,7 @@ writeLog("Searching for yesterday's table with pattern: {$search_pattern}%", 'IN
 
 // First, let's debug what columns are available
 $debug_sql = "SELECT table_name FROM information_schema.tables 
-              WHERE table_schema = '$db_name' 
+              WHERE table_schema = '$db_name'
               AND table_name LIKE '{$search_pattern}%' 
               ORDER BY table_name DESC";
 
@@ -627,10 +897,13 @@ if ($yesterday_table) {
 } else {
     writeLog("No yesterday table found to compare.", 'WARN');
 }
+}
+
+
 
 deleteOldTables($mysqli, $days_back = 3);
 
 $stmt->close();
 $mysqli->close();
-writeLog("Script completed.", 'INFO');
+writeLog("Script completed successfully.", 'INFO');
 ?>

@@ -15,11 +15,13 @@ if ($conn->connect_error) {
 $countryCode = isset($_GET['countryCode']) ? $_GET['countryCode'] : "us";
 $category = isset($_GET['category']) ? $_GET['category'] : "top";
 
-// Table name (update dynamically if needed)
-$tableName = "spotify_charts_20250820_104527";
+// Table name 
+//spotify_charts_20250820_104527
+$tableName = "spotify_charts_20250822_051029";
+
 
 // SQL query without movement/diff
-$stmt = $conn->prepare("SELECT showId, showName, showPublisher, showImageUrl, showDescription, countryName, countryCode, category
+$stmt = $conn->prepare("SELECT showId, showName, showPublisher, showImageUrl, showDescription, countryName,chart_rank, countryCode, category, chartRankMove, movement,cal_move
                         FROM `$tableName`
                         WHERE countryCode = ? AND category = ?");
 $stmt->bind_param("ss", $countryCode, $category);

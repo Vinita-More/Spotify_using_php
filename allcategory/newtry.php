@@ -12,8 +12,8 @@
     if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
 
     // Dates
-    $yesterday = 'spotify_charts_20250820_130735';
-    $today     = 'spotify_charts_20250821_105411';
+    $yesterday = 'spotify_charts_20250821_105411';
+    $today     = 'spotify_charts_20250822_051029';
 
     // ===============================
     // 1. Fetch yesterday’s data
@@ -65,7 +65,7 @@
 
             // Update DB
             if ($stmt) {
-                $stmt->bind_param("sisi",$y_rank,$movement, $cal_move,$row['id']);
+                $stmt->bind_param("iisi",$y_rank,$movement, $cal_move,$row['id']);
                 $stmt->execute();
             }
 
@@ -83,6 +83,7 @@
             echo $line;
             fwrite($file, $line);
         }
+        
     }
 
     fclose($file);
